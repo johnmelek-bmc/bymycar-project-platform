@@ -8,6 +8,7 @@ import jwt from 'jsonwebtoken'
 import nodemailer from 'nodemailer'
 import jsforce from 'jsforce'
 import fs from 'node:fs'
+import crypto from 'node:crypto'
 import { nanoid } from 'nanoid'
 import { z } from 'zod'
 import { db, migrate } from './db.js'
@@ -63,8 +64,16 @@ function auth(requiredVerified = true): express.RequestHandler {
   }
 }
 
+function hashToken(token: string) {
+  return crypto.createHash('sha256').update(token).digest('hex')
+}
+
+function createVerificationToken() {
+  return crypto.randomBytes(32).toString('base64url')
+}
+
 async function sendVerificationEmail(email: string, token: string) {
-  const verifyUrl = `${API_URL}/api/auth/verify?token=${encodeURIComponent(token)}`
+  const verifyUrl = `${API_URL}/api/auth/verify/${token}`
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f7fb;padding:32px">
       <div style="max-width:560px;margin:auto;background:rgba(255,255,255,.92);border:1px solid #dfe8f3;border-radius:28px;padding:34px;box-shadow:0 30px 80px rgba(20,35,60,.14)">
@@ -95,7 +104,7 @@ async function sendVerificationEmail(email: string, token: string) {
       inputs: [{
         emailAddresses: email,
         emailSubject: 'Verify your BYmyCAR Projects account',
-        emailBody: html,
+        emailBody: text,
         senderType: 'CurrentUser',
       }],
     })
@@ -150,27 +159,49 @@ app.post('/api/auth/signup', async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid signup details.' })
   const { name, email, password } = parsed.data
   if (!email.endsWith('@bymycar.fr')) return res.status(403).json({ error: 'Only @bymycar.fr email addresses can sign up.' })
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email)
-  if (existing) return res.status(409).json({ error: 'An account already exists for this email.' })
+
+  const verifiedUser = db.prepare('SELECT id FROM users WHERE email = ? AND verified_at IS NOT NULL').get(email)
+  if (verifiedUser) return res.status(409).json({ error: 'A verified account already exists for this email. Please sign in.' })
+
+  db.prepare('DELETE FROM users WHERE email = ? AND verified_at IS NULL').run(email)
+  db.prepare('DELETE FROM pending_registrations WHERE email = ?').run(email)
+
   const id = nanoid()
-  const hash = await bcrypt.hash(password, 12)
-  db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run(id, email, name, hash)
-  const token = nanoid(48)
-  db.prepare('INSERT INTO verification_tokens (token, user_id, expires_at) VALUES (?, ?, datetime(\'now\', \'+24 hours\'))').run(token, id)
+  const passwordHash = await bcrypt.hash(password, 12)
+  const token = createVerificationToken()
+  const tokenHash = hashToken(token)
+  db.prepare('INSERT INTO pending_registrations (id, email, name, password_hash, token_hash, expires_at) VALUES (?, ?, ?, ?, ?, datetime(\'now\', \'+24 hours\'))')
+    .run(id, email, name, passwordHash, tokenHash)
   await sendVerificationEmail(email, token)
-  res.status(201).json({ ok: true, message: 'Account created. Check your email for the verification link.' })
+  res.status(201).json({ ok: true, message: 'Verification email sent. Your account will only be created after you click the secure link.' })
+})
+
+app.get('/api/auth/verify/:token', (req, res) => {
+  const token = String(req.params.token || '')
+  const tokenHash = hashToken(token)
+  const registration = db.prepare('SELECT id, email, name, password_hash, expires_at FROM pending_registrations WHERE token_hash = ?').get(tokenHash) as { id: string; email: string; name: string; password_hash: string; expires_at: string } | undefined
+  if (!registration || new Date(registration.expires_at).getTime() < Date.now()) return res.status(400).send('Verification link is invalid or expired.')
+
+  const existing = db.prepare('SELECT id, email, name, verified_at FROM users WHERE email = ?').get(registration.email) as User | undefined
+  let user: User
+  if (existing) {
+    db.prepare('UPDATE users SET name = ?, password_hash = ?, verified_at = CURRENT_TIMESTAMP WHERE email = ?').run(registration.name, registration.password_hash, registration.email)
+    user = db.prepare('SELECT id, email, name, verified_at FROM users WHERE email = ?').get(registration.email) as User
+  } else {
+    const userId = nanoid()
+    db.prepare('INSERT INTO users (id, email, name, password_hash, verified_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)').run(userId, registration.email, registration.name, registration.password_hash)
+    user = db.prepare('SELECT id, email, name, verified_at FROM users WHERE id = ?').get(userId) as User
+  }
+  db.prepare('DELETE FROM pending_registrations WHERE email = ?').run(registration.email)
+  seedWorkspace(user)
+  setSession(res, user)
+  res.redirect(`${APP_URL}/?verified=1`)
 })
 
 app.get('/api/auth/verify', (req, res) => {
   const token = String(req.query.token || '')
-  const row = db.prepare('SELECT token, user_id, expires_at, used_at FROM verification_tokens WHERE token = ?').get(token) as { user_id: string; expires_at: string; used_at: string | null } | undefined
-  if (!row || row.used_at || new Date(row.expires_at).getTime() < Date.now()) return res.status(400).send('Verification link is invalid or expired.')
-  db.prepare('UPDATE users SET verified_at = CURRENT_TIMESTAMP WHERE id = ?').run(row.user_id)
-  db.prepare('UPDATE verification_tokens SET used_at = CURRENT_TIMESTAMP WHERE token = ?').run(token)
-  const user = db.prepare('SELECT id, email, name, verified_at FROM users WHERE id = ?').get(row.user_id) as User
-  seedWorkspace(user)
-  setSession(res, user)
-  res.redirect(`${APP_URL}/?verified=1`)
+  if (!token) return res.status(400).send('Verification link is missing its token.')
+  res.redirect(`/api/auth/verify/${encodeURIComponent(token)}`)
 })
 
 app.post('/api/auth/login', async (req, res) => {

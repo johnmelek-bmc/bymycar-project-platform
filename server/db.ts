@@ -9,6 +9,14 @@ export const db = new Database(path.join(dataDir, 'bymycar-projects.sqlite'))
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 
+function hasTable(name: string) {
+  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name))
+}
+
+function hasColumn(table: string, column: string) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => (row as { name: string }).name === column)
+}
+
 export function migrate() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -17,6 +25,16 @@ export function migrate() {
       name TEXT NOT NULL,
       password_hash TEXT NOT NULL,
       verified_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS pending_registrations (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      token_hash TEXT UNIQUE NOT NULL,
+      expires_at TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -63,5 +81,14 @@ export function migrate() {
       message TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+  `)
+
+  if (hasTable('verification_tokens') && !hasColumn('verification_tokens', 'registration_id')) {
+    db.exec('ALTER TABLE verification_tokens ADD COLUMN registration_id TEXT')
+  }
+
+  db.exec(`
+    DELETE FROM verification_tokens WHERE used_at IS NULL AND expires_at < CURRENT_TIMESTAMP;
+    DELETE FROM pending_registrations WHERE expires_at < CURRENT_TIMESTAMP;
   `)
 }

@@ -82,6 +82,7 @@ function App() {
     try {
       const result = await api<{ message: string }>('/api/auth/signup', { method: 'POST', body: JSON.stringify(form) })
       setMessage(result.message)
+      setForm({ ...form, password: '' })
       setMode('verify')
     } catch (err) { setError(err instanceof Error ? err.message : 'Signup failed') }
     finally { setLoading(false) }
