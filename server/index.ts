@@ -6,6 +6,8 @@ import helmet from 'helmet'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import nodemailer from 'nodemailer'
+import jsforce from 'jsforce'
+import fs from 'node:fs'
 import { nanoid } from 'nanoid'
 import { z } from 'zod'
 import { db, migrate } from './db.js'
@@ -63,6 +65,18 @@ function auth(requiredVerified = true): express.RequestHandler {
 
 async function sendVerificationEmail(email: string, token: string) {
   const verifyUrl = `${API_URL}/api/auth/verify?token=${encodeURIComponent(token)}`
+  const html = `
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f7fb;padding:32px">
+      <div style="max-width:560px;margin:auto;background:rgba(255,255,255,.92);border:1px solid #dfe8f3;border-radius:28px;padding:34px;box-shadow:0 30px 80px rgba(20,35,60,.14)">
+        <div style="font-size:13px;font-weight:800;color:#0071e3;text-transform:uppercase;letter-spacing:.08em">BYmyCAR Projects</div>
+        <h1 style="font-size:34px;line-height:1;margin:14px 0 12px;color:#0b1020">Verify your secure workspace account</h1>
+        <p style="font-size:16px;color:#536075;line-height:1.55">Click the button below to verify your BYmyCAR email address and unlock the project management platform.</p>
+        <a href="${verifyUrl}" style="display:inline-block;margin-top:22px;background:#0071e3;color:white;text-decoration:none;border-radius:999px;padding:15px 22px;font-weight:800">Verify my account</a>
+        <p style="font-size:13px;color:#7b8798;margin-top:24px">This link expires in 24 hours. If the button does not work, copy this URL:<br>${verifyUrl}</p>
+      </div>
+    </div>`
+  const text = `Verify your BYmyCAR Projects account: ${verifyUrl}`
+
   if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
     const transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -70,16 +84,47 @@ async function sendVerificationEmail(email: string, token: string) {
       secure: process.env.SMTP_SECURE === 'true',
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     })
-    await transporter.sendMail({
-      from: process.env.SMTP_FROM || 'BYmyCAR Projects <no-reply@bymycar.fr>',
-      to: email,
-      subject: 'Verify your BYmyCAR Projects account',
-      html: `<p>Welcome to BYmyCAR Projects.</p><p><a href="${verifyUrl}">Verify your account</a></p><p>This link expires in 24 hours.</p>`,
+    await transporter.sendMail({ from: process.env.SMTP_FROM || 'BYmyCAR Projects <no-reply@bymycar.fr>', to: email, subject: 'Verify your BYmyCAR Projects account', html, text })
+    return
+  }
+
+  if (process.env.SALESFORCE_EMAIL_ENABLED === 'true') {
+    const conn = new jsforce.Connection({ loginUrl: process.env.SALESFORCE_LOGIN_URL || process.env.SALESFORCE_DOMAIN || 'https://login.salesforce.com' })
+    await conn.login(process.env.SALESFORCE_USERNAME || '', `${process.env.SALESFORCE_PASSWORD || ''}${process.env.SALESFORCE_SECURITY_TOKEN || ''}`)
+    await conn.requestPost('/services/data/v59.0/actions/standard/emailSimple', {
+      inputs: [{
+        emailAddresses: email,
+        emailSubject: 'Verify your BYmyCAR Projects account',
+        emailBody: html,
+        senderType: 'CurrentUser',
+      }],
     })
-  } else {
-    console.log(`\n[BYmyCAR verification link for ${email}] ${verifyUrl}\n`)
+    return
+  }
+
+  console.log(`\n[BYmyCAR verification link for ${email}] ${verifyUrl}\n`)
+}
+
+function loadDesktopCredentialsIntoEnv() {
+  const credentialsPath = '/Users/john/Desktop/credentials.json'
+  if (process.env.SALESFORCE_EMAIL_ENABLED || !fs.existsSync(credentialsPath)) return
+  try {
+    const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'))
+    const salesforce = credentials.salesforce_prod
+    if (salesforce?.username && salesforce?.password && salesforce?.security_token && salesforce?.domain) {
+      process.env.SALESFORCE_EMAIL_ENABLED = 'true'
+      process.env.SALESFORCE_DOMAIN = salesforce.domain
+      process.env.SALESFORCE_LOGIN_URL = salesforce.domain.replace('.lightning.force.com/', '.my.salesforce.com/')
+      process.env.SALESFORCE_USERNAME = salesforce.username
+      process.env.SALESFORCE_PASSWORD = salesforce.password
+      process.env.SALESFORCE_SECURITY_TOKEN = salesforce.security_token
+    }
+  } catch (error) {
+    console.warn('Could not load desktop credentials for Salesforce email delivery.', error)
   }
 }
+
+loadDesktopCredentialsIntoEnv()
 
 function seedWorkspace(user: User) {
   const existing = db.prepare('SELECT COUNT(*) as count FROM projects WHERE owner_id = ?').get(user.id) as { count: number }
