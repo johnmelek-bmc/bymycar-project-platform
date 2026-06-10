@@ -1,15 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   ArrowRight,
   Bell,
   CalendarDays,
-  CheckCircle2,
   Clock3,
   Columns3,
   FileText,
   Link2,
   LockKeyhole,
+  LogOut,
   MailCheck,
   MessageSquareText,
   Plus,
@@ -20,188 +20,160 @@ import {
 } from 'lucide-react'
 import './App.css'
 
-type Task = {
-  title: string
-  owner: string
-  status: 'Backlog' | 'In progress' | 'Review' | 'Done'
-  priority: 'Low' | 'Medium' | 'High'
-  due: string
+type Task = { id: string; title: string; owner: string; status: 'Backlog' | 'In progress' | 'Review' | 'Done'; priority: 'Low' | 'Medium' | 'High'; due: string }
+type Project = { id: string; name: string; team: string; description: string; progress: number; health: 'Calm' | 'Focused' | 'At risk'; tasks: Task[] }
+type Activity = { id: string; message: string; created_at: string }
+type User = { id: string; email: string; name: string; verified: boolean }
+
+const API = ''
+
+async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${API}${path}`, {
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  })
+  const text = await response.text()
+  const data = text ? JSON.parse(text) : {}
+  if (!response.ok) throw new Error(data.error || 'Request failed')
+  return data
 }
-
-type Project = {
-  name: string
-  team: string
-  progress: number
-  health: 'Calm' | 'Focused' | 'At risk'
-  tasks: Task[]
-}
-
-const projects: Project[] = [
-  {
-    name: 'BDC transformation',
-    team: 'Sales Ops',
-    progress: 78,
-    health: 'Focused',
-    tasks: [
-      { title: 'Finalize Salesforce attribution map', owner: 'Sarah', status: 'In progress', priority: 'High', due: 'Today' },
-      { title: 'Review call routing blueprint', owner: 'John', status: 'Review', priority: 'Medium', due: 'Jun 14' },
-      { title: 'Publish executive dashboard', owner: 'Nina', status: 'Done', priority: 'High', due: 'Jun 18' },
-    ],
-  },
-  {
-    name: 'Workshop capacity planner',
-    team: 'After Sales',
-    progress: 52,
-    health: 'Calm',
-    tasks: [
-      { title: 'Share planning board with regions', owner: 'Mehdi', status: 'In progress', priority: 'Medium', due: 'Jun 17' },
-      { title: 'Import availability model', owner: 'Clara', status: 'Backlog', priority: 'Low', due: 'Jun 21' },
-      { title: 'Validate access groups', owner: 'Anaïs', status: 'Review', priority: 'High', due: 'Jun 19' },
-    ],
-  },
-]
-
-const activity = [
-  'Anaïs shared a private roadmap with Direction Réseau',
-  'John approved a milestone on BDC transformation',
-  'Sarah uploaded a decision note and requested verification',
-  'Mehdi moved 4 tasks to review for After Sales',
-]
 
 function App() {
-  const [email, setEmail] = useState('')
-  const [authStep, setAuthStep] = useState<'signup' | 'verify' | 'inside'>('signup')
-  const [selectedProject, setSelectedProject] = useState(projects[0])
+  const [mode, setMode] = useState<'signup' | 'login' | 'verify' | 'inside'>('signup')
+  const [user, setUser] = useState<User | null>(null)
+  const [projects, setProjects] = useState<Project[]>([])
+  const [activity, setActivity] = useState<Activity[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('')
+  const [form, setForm] = useState({ name: '', email: '', password: '' })
+  const [projectForm, setProjectForm] = useState({ name: '', team: '', description: '' })
+  const [taskTitle, setTaskTitle] = useState('')
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  const domainValid = useMemo(() => email.toLowerCase().trim().endsWith('@bymycar.fr'), [email])
+  const domainValid = useMemo(() => form.email.toLowerCase().trim().endsWith('@bymycar.fr'), [form.email])
+  const selectedProject = projects.find((project) => project.id === selectedProjectId) || projects[0]
 
-  const submitSignup = () => {
-    if (domainValid) setAuthStep('verify')
+  const loadWorkspace = async () => {
+    const [projectData, activityData] = await Promise.all([
+      api<{ projects: Project[] }>('/api/projects'),
+      api<{ activity: Activity[] }>('/api/activity'),
+    ])
+    setProjects(projectData.projects)
+    setActivity(activityData.activity)
+    setSelectedProjectId((current) => current || projectData.projects[0]?.id || '')
+  }
+
+  useEffect(() => {
+    api<{ user: User }>('/api/me')
+      .then(async ({ user }) => {
+        if (user.verified) {
+          setUser(user)
+          setMode('inside')
+          await loadWorkspace()
+        }
+      })
+      .catch(() => undefined)
+  }, [])
+
+  const signup = async () => {
+    setLoading(true); setError(''); setMessage('')
+    try {
+      const result = await api<{ message: string }>('/api/auth/signup', { method: 'POST', body: JSON.stringify(form) })
+      setMessage(result.message)
+      setMode('verify')
+    } catch (err) { setError(err instanceof Error ? err.message : 'Signup failed') }
+    finally { setLoading(false) }
+  }
+
+  const login = async () => {
+    setLoading(true); setError(''); setMessage('')
+    try {
+      const result = await api<{ user: User }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: form.email, password: form.password }) })
+      setUser(result.user)
+      setMode('inside')
+      await loadWorkspace()
+    } catch (err) { setError(err instanceof Error ? err.message : 'Login failed') }
+    finally { setLoading(false) }
+  }
+
+  const logout = async () => {
+    await api('/api/auth/logout', { method: 'POST' })
+    setUser(null); setProjects([]); setActivity([]); setMode('login')
+  }
+
+  const createProject = async () => {
+    if (!projectForm.name || !projectForm.team) return
+    await api('/api/projects', { method: 'POST', body: JSON.stringify(projectForm) })
+    setProjectForm({ name: '', team: '', description: '' })
+    await loadWorkspace()
+  }
+
+  const createTask = async () => {
+    if (!taskTitle || !selectedProject) return
+    await api('/api/tasks', { method: 'POST', body: JSON.stringify({ projectId: selectedProject.id, title: taskTitle, owner: user?.name || 'Unassigned', status: 'Backlog', priority: 'Medium', due: 'This week' }) })
+    setTaskTitle('')
+    await loadWorkspace()
   }
 
   return (
     <main className="shell">
-      <div className="aurora aurora-one" />
-      <div className="aurora aurora-two" />
-      <div className="grain" />
-
+      <div className="aurora aurora-one" /><div className="aurora aurora-two" /><div className="grain" />
       <nav className="nav glass-panel">
-        <div className="brand">
-          <div className="brand-mark">B</div>
-          <span>BYmyCAR Projects</span>
-        </div>
-        <div className="nav-links">
-          <a href="#platform">Platform</a>
-          <a href="#security">Security</a>
-          <a href="#workspace">Workspace</a>
-        </div>
-        <button className="nav-cta" onClick={() => setAuthStep('signup')}>Sign in</button>
+        <div className="brand"><div className="brand-mark">B</div><span>BYmyCAR Projects</span></div>
+        <div className="nav-links"><a href="#platform">Platform</a><a href="#security">Security</a><a href="#workspace">Workspace</a></div>
+        {user ? <button className="nav-cta" onClick={logout}><LogOut size={16} /> Logout</button> : <button className="nav-cta" onClick={() => setMode('login')}>Sign in</button>}
       </nav>
 
       <section className="hero-section" id="platform">
         <motion.div className="hero-copy" initial={{ opacity: 0, y: 34 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.9, ease: [0.2, 0.8, 0.2, 1] }}>
-          <div className="eyebrow"><Sparkles size={16} /> Liquid glass project command center</div>
+          <div className="eyebrow"><Sparkles size={16} /> Real production workspace</div>
           <h1>Plan, share, verify and deliver work with executive clarity.</h1>
-          <p className="hero-text">A premium project management platform for BYmyCAR teams: collaborative workspaces, secure sharing, deadline intelligence, files, comments, and verified company-only access.</p>
-          <div className="hero-actions">
-            <button className="primary" onClick={() => setAuthStep('signup')}>Create secure account <ArrowRight size={18} /></button>
-            <a className="secondary" href="#workspace">Preview workspace</a>
-          </div>
-          <div className="trust-row">
-            <span><ShieldCheck size={17} /> @bymycar.fr only</span>
-            <span><MailCheck size={17} /> email verification</span>
-            <span><LockKeyhole size={17} /> private sharing</span>
-          </div>
+          <p className="hero-text">A real authenticated project platform for BYmyCAR teams, backed by SQLite, secure password hashing, JWT sessions, email verification tokens, private project data and protected APIs.</p>
+          <div className="hero-actions"><button className="primary" onClick={() => setMode(user ? 'inside' : 'signup')}>{user ? 'Open workspace' : 'Create secure account'} <ArrowRight size={18} /></button><a className="secondary" href="#workspace">Workspace</a></div>
+          <div className="trust-row"><span><ShieldCheck size={17} /> @bymycar.fr only</span><span><MailCheck size={17} /> token verification</span><span><LockKeyhole size={17} /> private database</span></div>
         </motion.div>
 
-        <motion.div className="auth-card glass-panel" initial={{ opacity: 0, scale: 0.92, rotateX: 8 }} animate={{ opacity: 1, scale: 1, rotateX: 0 }} transition={{ duration: 1, delay: 0.15 }}>
+        {!user && <motion.div className="auth-card glass-panel" initial={{ opacity: 0, scale: 0.92, rotateX: 8 }} animate={{ opacity: 1, scale: 1, rotateX: 0 }} transition={{ duration: 1, delay: 0.15 }}>
           <AnimatePresence mode="wait">
-            {authStep === 'signup' && (
-              <motion.div key="signup" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-                <div className="auth-icon"><LockKeyhole /></div>
-                <h2>Company sign up</h2>
-                <p>Access is restricted to verified BYmyCAR email addresses.</p>
-                <label>Email address</label>
-                <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="firstname.lastname@bymycar.fr" />
-                <div className={domainValid ? 'domain valid' : 'domain'}>{domainValid ? 'Domain accepted — verification ready' : 'Only @bymycar.fr emails can create an account'}</div>
-                <button className="primary full" disabled={!domainValid} onClick={submitSignup}>Send verification link</button>
-              </motion.div>
-            )}
-            {authStep === 'verify' && (
-              <motion.div key="verify" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-                <div className="auth-icon success"><MailCheck /></div>
-                <h2>Verify your account</h2>
-                <p>A secure link is sent to <strong>{email}</strong>. In production this is enforced by Supabase Auth email confirmation and row-level security.</p>
-                <button className="primary full" onClick={() => setAuthStep('inside')}>Demo verified access</button>
-              </motion.div>
-            )}
-            {authStep === 'inside' && (
-              <motion.div key="inside" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-                <div className="auth-icon success"><CheckCircle2 /></div>
-                <h2>Welcome inside</h2>
-                <p>Your verified workspace is unlocked. Start creating private projects, tasks, milestones and shared decision rooms.</p>
-                <button className="primary full" onClick={() => document.getElementById('workspace')?.scrollIntoView({ behavior: 'smooth' })}>Open workspace</button>
-              </motion.div>
-            )}
+            {mode === 'signup' && <motion.div key="signup" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
+              <div className="auth-icon"><LockKeyhole /></div><h2>Create account</h2><p>Real accounts are stored securely. Only verified @bymycar.fr emails can enter.</p>
+              <label>Name</label><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Your name" />
+              <label>Email address</label><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="firstname.lastname@bymycar.fr" />
+              <label>Password</label><input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Minimum 10 characters" />
+              <div className={domainValid ? 'domain valid' : 'domain'}>{domainValid ? 'Domain accepted' : 'Only @bymycar.fr emails can create an account'}</div>
+              {error && <div className="error">{error}</div>}{message && <div className="success-msg">{message}</div>}
+              <button className="primary full" disabled={!domainValid || loading} onClick={signup}>{loading ? 'Creating...' : 'Create & send verification'}</button>
+              <button className="link-button" onClick={() => setMode('login')}>Already verified? Sign in</button>
+            </motion.div>}
+            {mode === 'login' && <motion.div key="login" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
+              <div className="auth-icon"><ShieldCheck /></div><h2>Sign in</h2><p>Use your verified BYmyCAR account.</p>
+              <label>Email address</label><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="firstname.lastname@bymycar.fr" />
+              <label>Password</label><input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Your password" />
+              {error && <div className="error">{error}</div>}
+              <button className="primary full" disabled={loading} onClick={login}>{loading ? 'Signing in...' : 'Sign in'}</button>
+              <button className="link-button" onClick={() => setMode('signup')}>Need an account?</button>
+            </motion.div>}
+            {mode === 'verify' && <motion.div key="verify" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
+              <div className="auth-icon success"><MailCheck /></div><h2>Verify email</h2><p>{message || 'Check your email for the verification link. The backend has generated a secure token and will unlock access after verification.'}</p><button className="primary full" onClick={() => setMode('login')}>Go to sign in</button>
+            </motion.div>}
           </AnimatePresence>
-        </motion.div>
+        </motion.div>}
       </section>
 
       <section className="feature-grid" id="security">
-        {[
-          { title: 'Verified identity', text: 'Enforce @bymycar.fr signup, email confirmation and protected workspace access.', Icon: ShieldCheck },
-          { title: 'Project rooms', text: 'Invite teammates, share links, files, timelines, decisions and notes.', Icon: Users2 },
-          { title: 'Live execution', text: 'Kanban, due dates, status, priorities, comments and activity streams.', Icon: Columns3 },
-          { title: 'Executive signal', text: 'Health, progress and risks summarized in a calm leadership interface.', Icon: Bell },
-        ].map(({ title, text, Icon }, i) => (
-          <motion.div className="feature glass-panel" key={title} initial={{ opacity: 0, y: 26 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ delay: i * 0.08 }}>
-            <Icon />
-            <h3>{title}</h3>
-            <p>{text}</p>
-          </motion.div>
-        ))}
+        {[{ title: 'Verified identity', text: 'Real server-side @bymycar.fr signup validation and verification tokens.', Icon: ShieldCheck }, { title: 'Project rooms', text: 'Projects and memberships persisted in a private SQLite database.', Icon: Users2 }, { title: 'Live execution', text: 'Create projects and tasks through authenticated backend APIs.', Icon: Columns3 }, { title: 'Executive signal', text: 'Activity and progress are stored and reloaded from the database.', Icon: Bell }].map(({ title, text, Icon }, i) => <motion.div className="feature glass-panel" key={title} initial={{ opacity: 0, y: 26 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ delay: i * 0.08 }}><Icon /><h3>{title}</h3><p>{text}</p></motion.div>)}
       </section>
 
       <section className="workspace glass-panel" id="workspace">
-        <div className="workspace-top">
-          <div>
-            <span className="eyebrow dark"><CalendarDays size={16} /> Today, executive workspace</span>
-            <h2>One place for every project conversation.</h2>
-          </div>
-          <div className="toolbar"><Search size={18} /><span>Search projects, tasks, files</span><button><Plus size={17} /> New project</button></div>
-        </div>
-
-        <div className="dashboard">
-          <aside className="sidebar">
-            {projects.map((project) => (
-              <button key={project.name} className={project.name === selectedProject.name ? 'project active' : 'project'} onClick={() => setSelectedProject(project)}>
-                <span>{project.name}</span><small>{project.team} · {project.progress}%</small>
-              </button>
-            ))}
-            <div className="share-box"><Link2 size={18} /><strong>Secure sharing</strong><p>Invite users, teams or generate expiring private links.</p></div>
-          </aside>
-
-          <div className="board">
-            <div className="project-header">
-              <div><h3>{selectedProject.name}</h3><p>{selectedProject.team} · health: {selectedProject.health}</p></div>
-              <div className="progress-ring" style={{ '--progress': `${selectedProject.progress}%` } as React.CSSProperties}>{selectedProject.progress}%</div>
-            </div>
-            <div className="task-list">
-              {selectedProject.tasks.map((task) => (
-                <motion.article className="task-card" key={task.title} layout whileHover={{ y: -4, scale: 1.01 }}>
-                  <div><strong>{task.title}</strong><span>{task.owner}</span></div>
-                  <div className="task-meta"><em>{task.status}</em><span className={task.priority.toLowerCase()}>{task.priority}</span><span><Clock3 size={14} /> {task.due}</span></div>
-                </motion.article>
-              ))}
-            </div>
-          </div>
-
-          <aside className="activity">
-            <h3><MessageSquareText size={18} /> Live activity</h3>
-            {activity.map((item) => <p key={item}>{item}</p>)}
-            <div className="file-card"><FileText size={18} /><span>Q3 transformation brief.pdf</span></div>
-          </aside>
-        </div>
+        <div className="workspace-top"><div><span className="eyebrow dark"><CalendarDays size={16} /> {user ? `Signed in as ${user.name}` : 'Protected workspace'}</span><h2>{user ? 'Your real project database is live.' : 'Sign in to access private projects.'}</h2></div><div className="toolbar"><Search size={18} /><span>Search projects, tasks, files</span><button onClick={createProject}><Plus size={17} /> New project</button></div></div>
+        {user && <div className="create-row"><input value={projectForm.name} onChange={(e) => setProjectForm({ ...projectForm, name: e.target.value })} placeholder="Project name" /><input value={projectForm.team} onChange={(e) => setProjectForm({ ...projectForm, team: e.target.value })} placeholder="Team" /><input value={projectForm.description} onChange={(e) => setProjectForm({ ...projectForm, description: e.target.value })} placeholder="Description" /><button onClick={createProject}>Create</button></div>}
+        {user && selectedProject ? <div className="dashboard">
+          <aside className="sidebar">{projects.map((project) => <button key={project.id} className={project.id === selectedProject.id ? 'project active' : 'project'} onClick={() => setSelectedProjectId(project.id)}><span>{project.name}</span><small>{project.team} · {project.progress}%</small></button>)}<div className="share-box"><Link2 size={18} /><strong>Secure sharing</strong><p>Membership tables are ready for invite-based access control.</p></div></aside>
+          <div className="board"><div className="project-header"><div><h3>{selectedProject.name}</h3><p>{selectedProject.team} · health: {selectedProject.health}</p></div><div className="progress-ring" style={{ '--progress': `${selectedProject.progress}%` } as React.CSSProperties}>{selectedProject.progress}%</div></div><div className="create-task"><input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Add a real task to the database" /><button onClick={createTask}>Add task</button></div><div className="task-list">{selectedProject.tasks.map((task) => <motion.article className="task-card" key={task.id} layout whileHover={{ y: -4, scale: 1.01 }}><div><strong>{task.title}</strong><span>{task.owner}</span></div><div className="task-meta"><em>{task.status}</em><span className={task.priority.toLowerCase()}>{task.priority}</span><span><Clock3 size={14} /> {task.due}</span></div></motion.article>)}</div></div>
+          <aside className="activity"><h3><MessageSquareText size={18} /> Live activity</h3>{activity.map((item) => <p key={item.id}>{item.message}</p>)}<div className="file-card"><FileText size={18} /><span>Files area ready for S3/GitHub storage integration</span></div></aside>
+        </div> : <div className="locked-state"><LockKeyhole /><h3>Authentication required</h3><p>Create and verify your account, then the private database workspace appears here.</p></div>}
       </section>
     </main>
   )
