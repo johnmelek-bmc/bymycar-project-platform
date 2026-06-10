@@ -8,7 +8,9 @@ import jwt from 'jsonwebtoken'
 import nodemailer from 'nodemailer'
 import jsforce from 'jsforce'
 import fs from 'node:fs'
+import path from 'node:path'
 import crypto from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { nanoid } from 'nanoid'
 import { z } from 'zod'
 import { db, migrate } from './db.js'
@@ -18,14 +20,14 @@ migrate()
 const app = express()
 const PORT = Number(process.env.PORT || 4174)
 const JWT_SECRET = process.env.JWT_SECRET || 'local-development-secret-change-before-production'
-const APP_URL = process.env.APP_URL || `http://localhost:5173`
-const API_URL = process.env.API_URL || `http://localhost:${PORT}`
+const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`
+const API_URL = process.env.API_URL || APP_URL
 const isProduction = process.env.NODE_ENV === 'production'
 
 app.use(helmet({ contentSecurityPolicy: false }))
 app.use(express.json({ limit: '1mb' }))
 app.use(cookieParser())
-app.use(cors({ origin: [APP_URL, 'http://localhost:5173', 'http://localhost:4173'], credentials: true }))
+app.use(cors({ origin: [APP_URL, 'http://localhost:5173', 'http://localhost:4173', `http://localhost:${PORT}`], credentials: true }))
 
 const signupSchema = z.object({
   name: z.string().min(2).max(80),
@@ -260,4 +262,11 @@ app.get('/api/activity', auth(), (req, res) => {
   res.json({ activity: rows })
 })
 
-app.listen(PORT, () => console.log(`BYmyCAR Projects API running on ${API_URL}`))
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const distDir = path.resolve(__dirname, '..', 'dist')
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir))
+  app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(path.join(distDir, 'index.html')))
+}
+
+app.listen(PORT, () => console.log(`BYmyCAR Projects running at ${API_URL}`))
